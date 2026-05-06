@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Photon.Pun;
 
 [RequireComponent(typeof(CharacterController))]
@@ -12,22 +13,52 @@ public class SimpleFirstPersonController : MonoBehaviourPun
 
     [Header("Mouse Settings")]
     public float mouseSensitivity = 2.0f;
+    public float gamepadSensitivity = 150f;
     public float maxLookAngle = 85f;
 
     private CharacterController cc;
     private float verticalVelocity = 0f;
     private float cameraPitch = 0f;
+    private Transform playerCamera;
 
-    private Transform playerCamera; // 🔹 수정: 내 캐릭터 전용 카메라 저장용
+    // ─── New Input System ───────────────────────────────
+    private InputAction moveAction;
+    private InputAction lookAction;
+    private InputAction jumpAction;
+    private InputAction runAction;
+    // ────────────────────────────────────────────────────
+
+    void Awake()
+    {
+        moveAction = new InputAction("Move");
+        moveAction.AddCompositeBinding("2DVector")
+            .With("Up",    "<Keyboard>/w")
+            .With("Down",  "<Keyboard>/s")
+            .With("Left",  "<Keyboard>/a")
+            .With("Right", "<Keyboard>/d");
+        moveAction.AddBinding("<Gamepad>/leftStick");
+
+        lookAction = new InputAction("Look", binding: "<Mouse>/delta");
+        lookAction.AddBinding("<Gamepad>/rightStick");
+
+        jumpAction = new InputAction("Jump", binding: "<Keyboard>/space");
+        jumpAction.AddBinding("<Gamepad>/buttonSouth"); // 게임패드 A버튼 (Xbox) / X버튼 (PS)
+
+        runAction = new InputAction("Run", binding: "<Keyboard>/leftShift");
+        runAction.AddBinding("<Gamepad>/leftStickPress"); // 왼쪽 스틱 누르기 (L3)
+    }
 
     void Start()
     {
         cc = GetComponent<CharacterController>();
 
-        // 🔹 수정: 내 캐릭터일 때만 카메라 세팅
         if (photonView.IsMine)
         {
-            // 메인 카메라 찾아서 내 캐릭터 자식으로 설정
+            moveAction.Enable();
+            lookAction.Enable();
+            jumpAction.Enable();
+            runAction.Enable();
+
             playerCamera = Camera.main.transform;
             playerCamera.SetParent(transform);
             playerCamera.localPosition = new Vector3(0, 0.75f, 0);
@@ -36,74 +67,60 @@ public class SimpleFirstPersonController : MonoBehaviourPun
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
         }
-        else
-        {
-            // 🔹 수정: 내 캐릭터가 아닐 경우 카메라 제거
-            if (Camera.main != null && Camera.main.transform.IsChildOf(transform))
-            {
-                Camera.main.transform.SetParent(null);
-            }
-        }
+    }
+
+    void OnDestroy()
+    {
+        moveAction.Disable();
+        lookAction.Disable();
+        jumpAction.Disable();
+        runAction.Disable();
     }
 
     void Update()
     {
-        // 🔹 수정: 내 캐릭터가 아니면 입력, 카메라 처리 전부 패스
         if (!photonView.IsMine) return;
-
-        // 🔹 수정: 상점 열려있으면 조작 막기
-        if (StoreUI.isStoreOpen)
-        {
-            return;
-        }
+        if (StoreUI.isStoreOpen) return;
 
         HandleMouseLook();
         HandleMovement();
     }
 
-    public void AddRecoil(float amount)
-    {
-        // 위로 들리게 (Y 마우스 이동과 같은 방향)
-        cameraPitch -= amount;
-        cameraPitch = Mathf.Clamp(cameraPitch, -maxLookAngle, maxLookAngle);
-        if (playerCamera != null)
-            playerCamera.localEulerAngles = new Vector3(cameraPitch, 0f, 0f);
-    }
-
     void HandleMouseLook()
     {
         if (playerCamera == null) return;
-        // 
 
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+        Vector2 lookInput = lookAction.ReadValue<Vector2>();
 
-        // 좌우 회전 (몸통 회전)
-        transform.Rotate(Vector3.up * mouseX);
+        bool isGamepad = Gamepad.current != null &&
+                         Gamepad.current.rightStick.IsActuated();
 
-        // 상하 회전 (카메라 피치 조정)
-        cameraPitch -= mouseY;
+        float sensitivity = isGamepad
+            ? gamepadSensitivity * Time.deltaTime
+            : mouseSensitivity;
+
+        Vector2 lookDelta = lookInput * sensitivity;
+
+        transform.Rotate(Vector3.up * lookDelta.x);
+        cameraPitch -= lookDelta.y;
         cameraPitch = Mathf.Clamp(cameraPitch, -maxLookAngle, maxLookAngle);
         playerCamera.localEulerAngles = new Vector3(cameraPitch, 0f, 0f);
     }
 
     void HandleMovement()
     {
-        float x = Input.GetAxisRaw("Horizontal");
-        float z = Input.GetAxisRaw("Vertical");
-
-        bool isRunning = Input.GetKey(KeyCode.LeftShift);
+        Vector2 moveInput = moveAction.ReadValue<Vector2>();
+        bool isRunning = runAction.IsPressed();
         float speed = isRunning ? runSpeed : walkSpeed;
 
-        Vector3 move = transform.right * x + transform.forward * z;
+        Vector3 move = transform.right * moveInput.x + transform.forward * moveInput.y;
         move = move.normalized * speed;
 
         if (cc.isGrounded)
         {
-            if (verticalVelocity < 0f)
-                verticalVelocity = -2f; // 살짝 눌러줌 (안 끌어내려가게)
+            if (verticalVelocity < 0f) verticalVelocity = -2f;
 
-            if (Input.GetButtonDown("Jump"))
+            if (jumpAction.WasPressedThisFrame())
                 verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
         }
         else
@@ -114,17 +131,20 @@ public class SimpleFirstPersonController : MonoBehaviourPun
         move.y = verticalVelocity;
         cc.Move(move * Time.deltaTime);
 
-        // 🔹 수정: 이동 상태를 다른 스크립트에 전달할 때 static 참조 최소화
-        if (x == 0 && z == 0 && cc.isGrounded)
-            Gun.isRunning = false;
-        else
-            Gun.isRunning = true;
+        Gun.isRunning = !(moveInput.x == 0 && moveInput.y == 0 && cc.isGrounded);
+    }
+
+    public void AddRecoil(float amount)
+    {
+        cameraPitch -= amount;
+        cameraPitch = Mathf.Clamp(cameraPitch, -maxLookAngle, maxLookAngle);
+        if (playerCamera != null)
+            playerCamera.localEulerAngles = new Vector3(cameraPitch, 0f, 0f);
     }
 
     public void UnlockCursor()
     {
         if (!photonView.IsMine) return;
-
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
     }

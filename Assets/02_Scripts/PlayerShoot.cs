@@ -4,6 +4,7 @@ public class PlayerShoot : MonoBehaviour
 {
     private void Update()
     {
+        Debug.Log(this.gameObject.name + " is trying to shoot.");
         RaycastHit hit;
         if (Input.GetMouseButton(0))
         {
